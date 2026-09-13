@@ -18,6 +18,7 @@ nonisolated struct Track: Codable, Identifiable {
   let trackCount: Int?
   let year: Int?
   let releaseDate: Date?
+  let dateAdded: Date?
   let _loved: Bool?
   let _albumLoved: Bool?
   let _explicit: Bool?
@@ -30,6 +31,19 @@ nonisolated struct Track: Codable, Identifiable {
   var explicit: Bool { _explicit ?? false }
   var appleMusic: Bool { _appleMusic ?? false }
   var playlistOnly: Bool { _playlistOnly ?? false }
+
+  var isInLibrary: Bool { !playlistOnly }
+
+  var effectiveReleaseDate: Date? {
+    releaseDate
+      ?? year.flatMap {
+        DateComponents(
+          calendar: Calendar(identifier: .gregorian),
+          timeZone: .gmt,
+          year: $0
+        ).date
+      }
+  }
 
   var effectiveAlbumArtist: String? {
     albumArtist?.nonEmpty ?? artist?.nonEmpty
@@ -49,6 +63,7 @@ nonisolated struct Track: Codable, Identifiable {
     case trackCount = "Track Count"
     case year = "Year"
     case releaseDate = "Release Date"
+    case dateAdded = "Date Added"
     case _loved = "Loved"
     case _albumLoved = "Album Loved"
     case _explicit = "Explicit"
@@ -107,9 +122,18 @@ nonisolated struct Album: Identifiable, Hashable {
 
   let id: ID
   let trackIDs: [Int]
+  let dateAdded: Date?
+  let releaseDate: Date?
 
   var name: String { id.name }
   var artist: String? { id.artist }
+
+  func matches(_ query: String) -> Bool {
+    query.isEmpty
+      || [name, artist].contains {
+        $0?.localizedStandardContains(query) ?? false
+      }
+  }
 }
 
 nonisolated struct Genre: Identifiable {
@@ -127,6 +151,7 @@ nonisolated struct Library: Codable {
   let artists: [Artist]
   let albums: [Album]
   let genres: [Genre]
+  let songs: [Track]
 
   enum CodingKeys: String, CodingKey {
     case date = "Date"
@@ -139,7 +164,10 @@ nonisolated struct Library: Codable {
     self.tracks = tracks
     self._playlists = playlists
 
-    let ordered = tracks.values.sorted { $0.precedesInAlbumOrder($1) }
+    let libraryTracks = tracks.values.filter(\.isInLibrary)
+    let ordered = libraryTracks.sorted { $0.precedesInAlbumOrder($1) }
+
+    self.songs = libraryTracks.sorted(by: TrackSortField.title, ascending: true)
 
     self.artists = Self.group(
       ordered,
@@ -156,14 +184,16 @@ nonisolated struct Library: Codable {
     } ignoringCase: {
       Album.ID(name: $0.name.caseFolded, artist: $0.artist?.caseFolded)
     }
-    .map { Album(id: $0.key, trackIDs: $0.trackIDs) }
-    .sorted { lhs, rhs in
-      let byName = lhs.name.localizedStandardCompare(rhs.name)
-      if byName != .orderedSame { return byName == .orderedAscending }
-
-      return (lhs.artist ?? "")
-        .localizedStandardCompare(rhs.artist ?? "") == .orderedAscending
+    .map { group in
+      let albumTracks = group.trackIDs.compactMap { tracks[$0] }
+      return Album(
+        id: group.key,
+        trackIDs: group.trackIDs,
+        dateAdded: albumTracks.compactMap(\.dateAdded).max(),
+        releaseDate: albumTracks.compactMap(\.effectiveReleaseDate).min()
+      )
     }
+    .sorted(by: AlbumSortField.title, ascending: true)
 
     self.genres = Self.group(
       ordered,
@@ -202,8 +232,42 @@ nonisolated struct Library: Codable {
     _playlists.filter { !$0.master && $0.distinguishedKind == nil }
   }
 
+  func playlist(id: Playlist.ID) -> Playlist? {
+    playlists.first { $0.id == id }
+  }
+
   func tracks(in playlist: Playlist) -> [Track] {
-    (playlist.playlistItems ?? []).compactMap { tracks[$0.trackID] }
+    guard playlist.folder else {
+      return (playlist.playlistItems ?? []).compactMap { tracks[$0.trackID] }
+    }
+
+    var seen = Set<Int>()
+    return children(of: playlist)
+      .flatMap { tracks(in: $0) }
+      .filter { seen.insert($0.trackID).inserted }
+  }
+
+  func album(containing track: Track) -> Album? {
+    albums.first { $0.trackIDs.contains(track.trackID) }
+  }
+
+  func tracks(in album: Album) -> [Track] {
+    album.trackIDs.compactMap { tracks[$0] }
+  }
+
+  func artist(named name: String) -> Artist? {
+    let folded = name.caseFolded
+    return artists.first { $0.name.caseFolded == folded }
+  }
+
+  func albums(by artist: Artist) -> [Album] {
+    let folded = artist.name.caseFolded
+    return albums.filter { $0.artist?.caseFolded == folded }
+  }
+
+  func albums(in genre: Genre) -> [Album] {
+    let trackIDs = Set(genre.trackIDs)
+    return albums.filter { $0.trackIDs.contains(where: trackIDs.contains) }
   }
 
   static func from(data: Data) throws -> Self {
@@ -252,6 +316,13 @@ nonisolated private struct TrackGroup<Key: Hashable> {
 }
 
 extension Track {
+  nonisolated func matches(_ query: String) -> Bool {
+    query.isEmpty
+      || [name, artist, album].contains {
+        $0?.localizedStandardContains(query) ?? false
+      }
+  }
+
   nonisolated fileprivate func precedesInAlbumOrder(_ other: Track) -> Bool {
     for (lhs, rhs) in [
       (album, other.album), (effectiveAlbumArtist, other.effectiveAlbumArtist),

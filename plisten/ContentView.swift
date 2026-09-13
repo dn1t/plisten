@@ -4,28 +4,15 @@
 
 import SwiftUI
 
-enum SidebarItem: Hashable {
-  case artists
-  case albums
-  case songs
-  case genres
-  case playlist(id: Playlist.ID)
-}
-
 struct ContentView: View {
   let document: LibraryDocument
 
-  @State private var selection = SidebarItem.albums
-
-  @State private var path: [Page] = []
-  @State private var selectedAlbumID: Album.ID?
-
-  private var playlists: [Playlist] { document.library?.playlists ?? [] }
+  @State private var navigation = NavigationModel()
 
   var body: some View {
     NavigationSplitView {
       if let library = document.library {
-        List(selection: $selection) {
+        List(selection: $navigation.sidebarSelection) {
           Section("Library") {
             Label("Artists", systemImage: "music.microphone")
               .tag(SidebarItem.artists)
@@ -48,36 +35,36 @@ struct ContentView: View {
     } detail: {
       detail
     }
+    .environment(document)
+    .environment(navigation)
   }
 
   @ViewBuilder
   private var detail: some View {
-    NavigationRoot(path: $path) {
-      if let library = document.library {
-        if selection == .artists {
-
-        } else if selection == .albums {
-          Table(library.albums, selection: $selectedAlbumID) {
-            TableColumn("Name", value: \.name)
-              .width(min: 60, ideal: 300)
-            TableColumn("Artist") { Text($0.artist ?? "—") }
-              .width(min: 60, ideal: 100)
-            TableColumn("Tracks") { Text($0.trackIDs.count.description) }
-              .width(min: 40, ideal: 60, max: 100)
-          }
-          .contextMenu(forSelectionType: Album.ID.self) { _ in
-          } primaryAction: { ids in
-            if ids.count == 1, let id = ids.first,
-              let album = library.albums.first(where: { $0.id == id })
-            {
-              path.append(.album(album: album))
-            }
-          }
+    if let library = document.library {
+      switch navigation.sidebarSelection {
+      case .artists:
+        ArtistsPage(library: library)
+      case .albums:
+        AlbumsPage(library: library)
+      case .songs:
+        SongsPage(library: library)
+      case .genres:
+        GenresPage(library: library)
+      case .playlist(let id):
+        if let playlist = library.playlist(id: id) {
+          PlaylistPage(playlist: playlist, library: library)
+            .id(id)
+        } else {
+          ContentUnavailableView(
+            "Playlist Not Found",
+            systemImage: "music.note.list"
+          )
         }
-      } else {
-        ProgressView()
-          .controlSize(.large)
       }
+    } else {
+      ProgressView()
+        .controlSize(.large)
     }
   }
 }
