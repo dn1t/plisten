@@ -17,6 +17,9 @@ struct ContentView: View {
 
   @State private var selection = SidebarItem.albums
 
+  @State private var path: [Page] = []
+  @State private var selectedAlbumID: Album.ID?
+
   private var playlists: [Playlist] { document.library?.playlists ?? [] }
 
   var body: some View {
@@ -49,12 +52,32 @@ struct ContentView: View {
 
   @ViewBuilder
   private var detail: some View {
-    if let library = document.library {
-      ScrollView {
+    NavigationRoot(path: $path) {
+      if let library = document.library {
+        if selection == .artists {
+
+        } else if selection == .albums {
+          Table(library.albums, selection: $selectedAlbumID) {
+            TableColumn("Name", value: \.name)
+              .width(min: 60, ideal: 300)
+            TableColumn("Artist") { Text($0.artist ?? "—") }
+              .width(min: 60, ideal: 100)
+            TableColumn("Tracks") { Text($0.trackIDs.count.description) }
+              .width(min: 40, ideal: 60, max: 100)
+          }
+          .contextMenu(forSelectionType: Album.ID.self) { _ in
+          } primaryAction: { ids in
+            if ids.count == 1, let id = ids.first,
+              let album = library.albums.first(where: { $0.id == id })
+            {
+              path.append(.album(album: album))
+            }
+          }
+        }
+      } else {
+        ProgressView()
+          .controlSize(.large)
       }
-    } else {
-      ProgressView()
-        .controlSize(.large)
     }
   }
 }
